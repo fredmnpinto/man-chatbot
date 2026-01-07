@@ -4,11 +4,14 @@ import re
 import subprocess
 import json
 from pathlib import Path
+import os, sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 SECTIONS_TO_LOOK_FOR_FLAGS = ['OPTIONS', 'OPTION', 'GLOBAL OPTIONS', 'COMMAND OPTIONS', 'POSITIONAL OPTIONS', 'FLAGS', 'SWITCHES']
+DATA_PATH = Path(__file__).parent.parent / 'data'
 
-def get_program_index() -> dict:
+def get_man_pages_index() -> dict:
     result = subprocess.check_output('apropos -l .', shell=True, text=True)
 
     # 'apropos', '(1)', '-', 'search', 'the', 'manual', 'page', 'names', 'and', 'descriptions'
@@ -34,14 +37,21 @@ def get_program_index() -> dict:
 
     return index_data
 
-def update_index(new_data: dict):
+def update_local_index(new_data: dict):
     json_data = json.dumps(new_data)
     
-    data_folder_path = Path(__file__).parent / 'data'
-    index_file_path = data_folder_path / 'index.json'
+    index_file_path = DATA_PATH / 'index.json'
 
     with open(index_file_path, 'w') as file:
         file.write(json_data)
+
+def get_local_index() -> dict:
+    local_index = None
+
+    with open(DATA_PATH / 'index.json', 'r') as file:
+        local_index = json.load(file)
+
+    return local_index
 
 def split_sections_of_man_page(page_content: str) -> dict:
     """
@@ -76,7 +86,7 @@ def get_man_page(program_name: str) -> dict:
     """
         Gets the man page for <program_name> and returns it as a dict with each section of the page as key value pairs.
     """
-    page_content = subprocess.check_output(f"MANWIDTH=1000 man -P cat {program_name}", shell=True, text=True)
+    page_content = subprocess.check_output(f"MANWIDTH=1000 man -P cat {program_name} 2>/dev/null", shell=True, text=True)
 
     split_page_content = split_sections_of_man_page(page_content)
 
@@ -164,14 +174,29 @@ def save_man_page(program_name: str, page: dict) -> None:
     with open(index_file_path, 'w') as file:
         file.write(json.dumps(page))
 
-    print(f"Finished saving {program_name}")
+def display_progress(i, total):
+    sys.stdout.write(f"\rProgress: ({i}/{total})")
+    sys.stdout.flush()
+
+def fetch_data(program_name):
+    page_content = get_man_page(program_name)
+
+    save_man_page(program_name, page_content)
 
 if __name__ == '__main__':
-    page_content = get_man_page('find')
+    local_index = get_local_index()
+    programs = list(local_index.keys())
+    total = len(programs)
 
-    print(f"Sections: {page_content.keys()}")
+    completed = 0
 
-    save_man_page('find', page_content)
+    max_workers = min(8, os.cpu_count() * 2)
+    print(f"Firing {max_workers} threads")
 
-    print('Finished')
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(fetch_data, p) for p in programs]
+        for _ in as_completed(futures):
+            completed += 1
+            display_progress(completed, total)
 
+    sys.stderr.write("\nFinished\n")
