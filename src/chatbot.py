@@ -1,3 +1,4 @@
+import os
 import json
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
@@ -8,7 +9,7 @@ import subprocess
 # === Paths ===
 DATA_PATH = Path(__file__).parent.parent / 'data'  # parent of src
 PAGES_PATH = DATA_PATH / 'pages'
-OLLAMA_CMD = "/usr/local/bin/ollama"
+OLLAMA_CMD = os.environ.get("OLLAMA_CMD", "ollama")
 
 FAISS_INDEX_PATH = DATA_PATH / "faiss.index"
 CHUNKS_PATH = DATA_PATH / "chunks.json"
@@ -130,7 +131,7 @@ def ollama_query(prompt: str, model="llama2") -> str:
     return result.stdout.strip()
 
 
-def query_chatbot(user_query, index, docs, texts, model, top_k=3):
+def query_chatbot(user_query, index, docs, texts, model, top_k=3, min_score=0.35):
     query_emb = model.encode(
         [user_query],
         convert_to_numpy=True,
@@ -139,11 +140,22 @@ def query_chatbot(user_query, index, docs, texts, model, top_k=3):
 
     D, I = index.search(query_emb, top_k)
 
+    print(f"Relevancy score: {D[0][0]}")
+    # no sufficiently relevant context
+    if D[0][0] < min_score:
+        return (
+            "I couldn’t find relevant information in the local man pages "
+            "to answer this question."
+        )
+
     context = "\n\n".join(texts[i] for i in I[0])
 
     prompt = f"""
 You are a Linux man page assistant.
 Answer using ONLY the context below.
+If the context does NOT contain the information needed to answer,
+say explicitly that the information is not available.
+Answer TOGETHER with a reference to the relevant man page(s).
 
 Context:
 {context}
@@ -152,8 +164,10 @@ Question:
 {user_query}
 """
 
-    return ollama_query(prompt, model="mistral")
-
+    return ollama_query(
+        prompt,
+        model=os.environ.get("OLLAMA_MODEL", "llama3.1")
+    )
 
 # === Main ===
 if __name__ == "__main__":
@@ -163,8 +177,12 @@ if __name__ == "__main__":
 
     print("\nLinux Man Page Chatbot (type 'exit' to quit)")
     while True:
-        user_query = input("\nYou: ")
-        if user_query.lower() in ['exit', 'quit']:
+        try:
+            user_query = input("\nYou: ")
+            if user_query.lower() in ['exit', 'quit']:
+                break
+            answer = query_chatbot(user_query, index, docs, texts, model)
+            print(f"\nBot: {answer}")
+        except KeyboardInterrupt:
+            print("\nBot: Bye bye!")
             break
-        answer = query_chatbot(user_query, index, docs, texts, model)
-        print(f"\nBot: {answer}")
